@@ -9,10 +9,11 @@ class LnorisPlugin implements Plugin.PluginBase {
   name = 'LNORI';
   icon = 'src/en/lnori/icon.png';
   site = 'https://lnori.com/';
-  version = '1.0.1';
+  version = '1.1.0';
 
   private async getLibraryNovels(): Promise<
     {
+      id: number;
       novel: Plugin.NovelItem;
       author: string;
       tags: string[];
@@ -23,12 +24,14 @@ class LnorisPlugin implements Plugin.PluginBase {
     const $ = parseHTML(body);
 
     const parsedList: {
+      id: number;
       novel: Plugin.NovelItem;
       author: string;
       tags: string[];
     }[] = [];
 
     $('article.card').each((i, el) => {
+      const id = Number($(el).attr('data-id')) || 0;
       const name = $(el).attr('data-t') || '';
       const author = $(el).attr('data-a') || '';
       const tagsAttr = $(el).attr('data-tags') || '';
@@ -48,6 +51,7 @@ class LnorisPlugin implements Plugin.PluginBase {
 
       if (path && name) {
         parsedList.push({
+          id,
           novel: {
             name,
             path,
@@ -64,20 +68,27 @@ class LnorisPlugin implements Plugin.PluginBase {
 
   async popularNovels(
     pageNo: number,
-    { filters }: Plugin.PopularNovelsOptions<typeof this.filters>,
+    {
+      showLatestNovels,
+      filters,
+    }: Plugin.PopularNovelsOptions<typeof this.filters>,
   ): Promise<Plugin.NovelItem[]> {
     const parsedList = await this.getLibraryNovels();
 
     let filteredList = parsedList;
     const selectedGenre = filters?.genre?.value;
-    if (selectedGenre) {
+    if (!showLatestNovels && selectedGenre) {
       filteredList = filteredList.filter(item =>
         item.tags.includes(selectedGenre.toLowerCase()),
       );
     }
 
     const selectedSort = filters?.sort?.value;
-    if (selectedSort === 'title-az') {
+    if (showLatestNovels) {
+      // The library has no "recently added" feed; card ids are assigned in
+      // insertion order, so the highest ids are the site's newest additions.
+      filteredList.sort((a, b) => b.id - a.id);
+    } else if (selectedSort === 'title-az') {
       filteredList.sort((a, b) => a.novel.name.localeCompare(b.novel.name));
     } else if (selectedSort === 'title-za') {
       filteredList.sort((a, b) => b.novel.name.localeCompare(a.novel.name));
