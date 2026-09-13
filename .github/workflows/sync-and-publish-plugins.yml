@@ -127,6 +127,7 @@ jobs:
           NEW_COUNT: ${{ steps.sync.outputs.new_count }}
           NEW_COMMITS: ${{ steps.sync.outputs.new_commits }}
           DIST: ${{ steps.publish.outputs.dist }}
+          MANIFEST_URL: https://raw.githubusercontent.com/${{ github.repository }}/${{ steps.publish.outputs.dist }}/.dist/plugins.min.json
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -137,7 +138,8 @@ jobs:
             reason="manual run"
           fi
           text="✅ lnreader-plugins published to ${DIST}
-          Trigger: ${reason}"
+          Trigger: ${reason}
+          Manifest: ${MANIFEST_URL}"
           if [ -n "${NEW_COMMITS}" ]; then
             text="${text}
 
