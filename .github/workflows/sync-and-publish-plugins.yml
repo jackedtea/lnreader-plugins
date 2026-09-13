@@ -1,0 +1,176 @@
+# Fork-local workflow: every 3 hours merge upstream (LNReader/lnreader-plugins,
+# master) into this repository's `dev` branch. When that brings in changes
+# (or on a direct push to `dev`), publish the plugins to `plugins/v<version>`
+# and report on Telegram (secrets TELEGRAM_TOKEN / TELEGRAM_CHAT_ID).
+name: Sync and Publish Plugins
+
+on:
+  schedule:
+    - cron: '0 */3 * * *'
+  push:
+    branches:
+      - dev
+    paths:
+      - 'plugins/**'
+      - 'public/**'
+      - 'scripts/publish-plugins.sh'
+      - '.github/workflows/sync-and-publish-plugins.yml'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Publish even if upstream brought no changes
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: https://github.com/LNReader/lnreader-plugins.git
+  UPSTREAM_BRANCH: master
+  TARGET_BRANCH: dev
+
+jobs:
+  sync-and-publish:
+    name: Sync upstream and publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ env.TARGET_BRANCH }}
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+
+      - name: Sync upstream into ${{ env.TARGET_BRANCH }}
+        id: sync
+        shell: bash
+        run: |
+          set -euo pipefail
+          git remote add upstream "$UPSTREAM_REPO"
+          git fetch upstream "$UPSTREAM_BRANCH"
+
+          before=$(git rev-parse HEAD)
+          new_commits=$(git log --oneline --no-merges "HEAD..upstream/$UPSTREAM_BRANCH" || true)
+
+          if ! git merge --no-edit "upstream/$UPSTREAM_BRANCH"; then
+            git merge --abort || true
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+            echo "::error::Merge conflict while syncing upstream/$UPSTREAM_BRANCH into $TARGET_BRANCH"
+            exit 1
+          fi
+          after=$(git rev-parse HEAD)
+
+          if [ "$before" != "$after" ]; then
+            git push origin "HEAD:$TARGET_BRANCH"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "## Upstream changes merged" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            echo "$new_commits" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Already up to date with upstream/$UPSTREAM_BRANCH" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          {
+            echo "new_commits<<EOF"
+            echo "$new_commits" | head -n 30
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "new_count=$(printf '%s\n' "$new_commits" | grep -c . || true)" >> "$GITHUB_OUTPUT"
+
+      - name: Decide whether to publish
+        id: decide
+        shell: bash
+        run: |
+          if [ "${{ steps.sync.outputs.changed }}" = "true" ] \
+             || [ "${{ github.event_name }}" = "push" ] \
+             || [ "${{ github.event.inputs.force }}" = "true" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Node.js
+        if: steps.decide.outputs.publish == 'true'
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '24'
+
+      - name: Install Dependencies
+        if: steps.decide.outputs.publish == 'true'
+        run: npm ci --omit=dev --ignore-scripts
+
+      - name: Publish Plugins
+        if: steps.decide.outputs.publish == 'true'
+        id: publish
+        shell: bash
+        run: |
+          npm run publish:plugins 2>> "$GITHUB_STEP_SUMMARY"
+          echo "dist=plugins/v$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Notify Telegram (published)
+        if: steps.decide.outputs.publish == 'true' && success()
+        shell: bash
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          NEW_COUNT: ${{ steps.sync.outputs.new_count }}
+          NEW_COMMITS: ${{ steps.sync.outputs.new_commits }}
+          DIST: ${{ steps.publish.outputs.dist }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          reason="upstream sync (${NEW_COUNT} new commit(s))"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            reason="push to ${TARGET_BRANCH}"
+          elif [ "${{ github.event.inputs.force }}" = "true" ]; then
+            reason="manual run"
+          fi
+          text="✅ lnreader-plugins published to ${DIST}
+          Trigger: ${reason}"
+          if [ -n "${NEW_COMMITS}" ]; then
+            text="${text}
+
+          ${NEW_COMMITS}"
+          fi
+          text="${text}
+
+          ${RUN_URL}"
+          curl -sS -o /dev/null --fail-with-body \
+            "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "disable_web_page_preview=true" \
+            --data-urlencode "text=${text}"
+
+      - name: Notify Telegram (failure)
+        if: failure()
+        shell: bash
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          CONFLICT: ${{ steps.sync.outputs.conflict }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ "${CONFLICT}" = "true" ]; then
+            text="❌ lnreader-plugins: merge conflict syncing upstream/${UPSTREAM_BRANCH} into ${TARGET_BRANCH} — resolve manually."
+          else
+            text="❌ lnreader-plugins: sync/publish workflow failed."
+          fi
+          curl -sS -o /dev/null --fail-with-body \
+            "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "disable_web_page_preview=true" \
+            --data-urlencode "text=${text}
+
+          ${RUN_URL}"
