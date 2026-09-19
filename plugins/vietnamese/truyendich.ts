@@ -33,7 +33,7 @@ type ApiChapter = {
 };
 
 const VERIFY_MESSAGE =
-  'truyendich.space requires human verification (Cloudflare Turnstile). Open the chapter in WebView, complete the check, then try again.';
+  'Cloudflare protection detected (HTTP error). Please try opening the plugin in WebView first to solve the challenge.';
 
 /**
  * The site is a Next.js front-end over a JSON API (`/api/...`); everything
