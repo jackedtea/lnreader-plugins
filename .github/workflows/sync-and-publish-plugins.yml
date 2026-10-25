@@ -2,6 +2,10 @@
 # master) into this repository's `dev` branch. When that brings in changes
 # (or on a direct push to `dev`), publish the plugins to `plugins/v<version>`
 # and report on Telegram (secrets TELEGRAM_TOKEN / TELEGRAM_CHAT_ID).
+#
+# Secret SYNC_TOKEN: a PAT with Contents + Workflows write on this repo. The
+# default GITHUB_TOKEN can never push commits that touch .github/workflows/,
+# so any upstream merge that adds or edits a workflow is rejected without it.
 name: Sync and Publish Plugins
 
 on:
@@ -38,12 +42,18 @@ jobs:
   sync-and-publish:
     name: Sync upstream and publish
     runs-on: ubuntu-latest
+    # A PAT push of the upstream merge re-triggers this workflow on `push`;
+    # the scheduled run that made the merge already publishes it.
+    if: >-
+      github.event_name != 'push'
+      || !startsWith(github.event.head_commit.message, 'Merge remote-tracking branch ''upstream/')
     steps:
       - name: Checkout Repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ env.TARGET_BRANCH }}
           fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
 
       - name: Configure Git
         run: |
